@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Herramienta de Medición
+Comment=Mide distancias en la pantalla
+Exec=measure_tool
+Icon=measure-tool
+Terminal=false
+Type=Application
+Categories=Utility;Graphics;
+StartupNotify=true
+Keywords=measure;screen;pixel;

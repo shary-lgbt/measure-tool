@@ -1,0 +1,10 @@
+Package: measure-tool
+Version: 1.0-1
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: libgtk-3-0
+Maintainer: Tu Nombre <tu@email.com>
+Description: Herramienta de medición de pantalla
+ Una herramienta simple para medir distancias en la pantalla.
+ Permite medir píxeles entre dos puntos y copiar las dimensiones.
