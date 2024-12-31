@@ -175,31 +175,111 @@ public class MeasureTool : Gtk.Window {
             var screen_width = screen.get_width();
             var screen_height = screen.get_height();
             
+            // Tomar una captura del área medida
+            var window = this.get_window();
+            int x = (int)((start_x < current_x) ? start_x : current_x);
+            int y = (int)((start_y < current_y) ? start_y : current_y);
+            var pixbuf = Gdk.pixbuf_get_from_window(
+                window,
+                x,
+                y,
+                width,
+                height
+            );
+            
+            // Calcular el color promedio del área
+            if (pixbuf != null) {
+                unowned uint8[] pixels = pixbuf.get_pixels();
+                int channels = pixbuf.get_n_channels();
+                int rowstride = pixbuf.get_rowstride();
+                
+                double r_sum = 0, g_sum = 0, b_sum = 0;
+                int pixel_count = width * height;
+                
+                // Tomar muestras del centro del área
+                int sample_size = 10; // Número de píxeles a muestrear
+                int center_x = width / 2;
+                int center_y = height / 2;
+                
+                // Muestrear píxeles alrededor del centro
+                for (int py = -sample_size; py < sample_size; py++) {
+                    for (int px = -sample_size; px < sample_size; px++) {
+                        int sample_x = center_x + px;
+                        int sample_y = center_y + py;
+                        
+                        // Asegurarse de que estamos dentro de los límites
+                        if (sample_x >= 0 && sample_x < width && sample_y >= 0 && sample_y < height) {
+                            int position = sample_y * rowstride + sample_x * channels;
+                            r_sum += pixels[position];
+                            g_sum += pixels[position + 1];
+                            b_sum += pixels[position + 2];
+                            pixel_count++;
+                        }
+                    }
+                }
+                
+                double avg_brightness = (r_sum + g_sum + b_sum) / (3 * pixel_count);
+                stdout.printf("Brillo promedio: %f\n", avg_brightness);  // Para depuración
+                
+                // Ajustar el umbral para mejor detección
+                if (avg_brightness > 200) {  // Aumentamos el umbral para superficies blancas
+                    // Área clara - usar texto negro
+                    cr.set_source_rgba(0, 0, 0, 1);
+                    stdout.printf("Usando texto negro\n");
+                } else {
+                    // Área oscura - usar texto blanco
+                    cr.set_source_rgba(1, 1, 1, 1);
+                    stdout.printf("Usando texto blanco\n");
+                }
+            } else {
+                // Si no se puede obtener el pixbuf, usar texto blanco por defecto
+                cr.set_source_rgba(1, 1, 1, 1);
+            }
+            
             // Preparar el texto
-            cr.set_source_rgba(1, 1, 1, 1);
             cr.select_font_face("Sans", Cairo.FontSlant.NORMAL, Cairo.FontWeight.BOLD);
             cr.set_font_size(12);
+            
+            string dimensions_text = @"Ancho: $width px\nAlto: $height px";
             
             // Calcular posición del texto
             double text_x = current_x + 10;
             double text_y = current_y + 10;
             
             // Ajustar posición horizontal si está cerca del borde derecho
-            if (text_x + 100 > screen_width) { // 100 es un estimado del ancho del texto
+            if (text_x + 100 > screen_width) {
                 text_x = current_x - 110;
             }
             
             // Ajustar posición vertical si está cerca del borde inferior
-            if (text_y + 30 > screen_height) { // 30 es un estimado del alto del texto
+            if (text_y + 30 > screen_height) {
                 text_y = current_y - 30;
             }
             
+            // Obtener las dimensiones del texto
+            Cairo.TextExtents extents;
+            cr.text_extents(dimensions_text, out extents);
+            
+            // Dibujar el fondo negro semitransparente
+            cr.set_source_rgba(0, 0, 0, 0.7);  // Negro con 70% de opacidad
+            cr.rectangle(
+                text_x - 5,                    // Un poco a la izquierda del texto
+                text_y - extents.height - 5,   // Un poco arriba del texto
+                extents.width + 10,            // Ancho del texto + padding
+                extents.height * 2 + 10        // Alto del texto + padding
+            );
+            cr.fill();
+            
+            // Dibujar el texto en blanco
+            cr.set_source_rgba(1, 1, 1, 1);    // Blanco sólido
             cr.move_to(text_x, text_y);
-            cr.show_text(@"Ancho: $width px\nAlto: $height px");
+            cr.show_text(@"Ancho: $width px");
+            cr.move_to(text_x, text_y + extents.height + 5);
+            cr.show_text(@"Alto: $height px");
             
             // Actualizar las últimas dimensiones medidas
-            last_width = (int)Math.fabs(current_x - start_x);
-            last_height = (int)Math.fabs(current_y - start_y);
+            last_width = width;
+            last_height = height;
         }
         return false;
     }
