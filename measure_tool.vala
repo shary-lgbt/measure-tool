@@ -1,3 +1,5 @@
+using GLib;
+
 public class MeasureTool : Gtk.Window {
     private bool is_measuring = false;
     private bool is_moving = false;
@@ -13,6 +15,8 @@ public class MeasureTool : Gtk.Window {
     private int resize_handle = 0; // 0: ninguno, 1-4: esquinas
     
     private const int HANDLE_SIZE = 10; // Tamaño del área para redimensionar
+    
+    private string last_screenshot_path = "";
     
     public MeasureTool() {
         Object(
@@ -90,10 +94,16 @@ public class MeasureTool : Gtk.Window {
                 return true;
             }
             // Copiar dimensiones cuando se presiona Ctrl+C
-            if ((event.state & Gdk.ModifierType.CONTROL_MASK) != 0 && 
-                (event.keyval == Gdk.Key.c || event.keyval == Gdk.Key.C)) {
-                copy_dimensions();
-                return true;
+            if ((event.state & Gdk.ModifierType.CONTROL_MASK) != 0) {
+                if (event.keyval == Gdk.Key.c || event.keyval == Gdk.Key.C) {
+                    copy_dimensions();
+                    return true;
+                }
+                // Capturar área cuando se presiona Ctrl+S
+                if (event.keyval == Gdk.Key.s || event.keyval == Gdk.Key.S) {
+                    take_screenshot();
+                    return true;
+                }
             }
             return false;
         });
@@ -331,6 +341,113 @@ public class MeasureTool : Gtk.Window {
             this.queue_draw();
         }
         return true;
+    }
+    
+    private void take_screenshot() {
+        if (current_x == start_x || current_y == start_y) {
+            return; // No hay área seleccionada
+        }
+        
+        try {
+            // Obtener las coordenadas del área
+            int x = (int)double.min(start_x, current_x);
+            int y = (int)double.min(start_y, current_y);
+            int width = (int)Math.fabs(current_x - start_x);
+            int height = (int)Math.fabs(current_y - start_y);
+            
+            // Ocultar temporalmente la ventana para la captura
+            this.hide();
+            
+            // Esperar a que la ventana se oculte completamente
+            while (Gtk.events_pending()) {
+                Gtk.main_iteration();
+            }
+            Thread.usleep(200000); // Esperar 200ms para asegurar que la pantalla se actualice
+            
+            // Forzar actualización de la pantalla
+            var root_window = screen.get_root_window();
+            root_window.process_updates(true);
+            
+            // Tomar la captura del área desde la ventana raíz
+            var screenshot = Gdk.pixbuf_get_from_window(
+                root_window,
+                x, y,
+                width, height
+            );
+            
+            // Mostrar la ventana nuevamente
+            this.show();
+            
+            // Generar nombre de archivo único
+            string timestamp = new DateTime.now_local().format("%Y%m%d_%H%M%S");
+            string filename = @"screenshot_$(timestamp).png";
+            string filepath = Path.build_filename(Environment.get_home_dir(), "Imágenes", filename);
+            
+            // Asegurarse de que el directorio existe
+            File directory = File.new_for_path(Path.build_filename(Environment.get_home_dir(), "Imágenes"));
+            if (!directory.query_exists()) {
+                directory.make_directory_with_parents();
+            }
+            
+            // Guardar la captura
+            screenshot.save(filepath, "png");
+            last_screenshot_path = filepath;
+            
+            // Mostrar notificación
+            var notification = new Gtk.Window(Gtk.WindowType.POPUP);
+            notification.set_default_size(250, 40);
+            
+            var box = new Gtk.Box(Gtk.Orientation.VERTICAL, 5);
+            box.margin = 10;
+            
+            var label = new Gtk.Label("¡Captura guardada!");
+            label.margin = 5;
+            box.add(label);
+            
+            var path_label = new Gtk.Label(filepath);
+            path_label.margin = 5;
+            path_label.set_line_wrap(true);
+            box.add(path_label);
+            
+            notification.add(box);
+            
+            // Posicionar la notificación
+            var workarea = screen.get_monitor_workarea(screen.get_primary_monitor());
+            
+            notification.move(
+                workarea.x + (workarea.width - 250) / 2,
+                workarea.y + (workarea.height - 80) / 2
+            );
+            
+            notification.show_all();
+            
+            // Cerrar la notificación después de 2 segundos
+            GLib.Timeout.add(2000, () => {
+                notification.destroy();
+                return false;
+            });
+            
+        } catch (Error e) {
+            // Asegurarse de que la ventana se muestre en caso de error
+            this.show();
+            
+            stderr.printf("Error al guardar la captura: %s\n", e.message);
+            
+            // Mostrar notificación de error
+            var error_notification = new Gtk.Window(Gtk.WindowType.POPUP);
+            error_notification.set_default_size(200, 40);
+            
+            var label = new Gtk.Label("Error al guardar la captura");
+            label.margin = 10;
+            error_notification.add(label);
+            
+            error_notification.show_all();
+            
+            GLib.Timeout.add(2000, () => {
+                error_notification.destroy();
+                return false;
+            });
+        }
     }
     
     public static int main(string[] args) {
