@@ -1,11 +1,18 @@
 public class MeasureTool : Gtk.Window {
     private bool is_measuring = false;
+    private bool is_moving = false;
+    private bool is_resizing = false;
     private double start_x = 0;
     private double start_y = 0;
     private double current_x = 0;
     private double current_y = 0;
     private int last_width = 0;
     private int last_height = 0;
+    private double drag_offset_x = 0;
+    private double drag_offset_y = 0;
+    private int resize_handle = 0; // 0: ninguno, 1-4: esquinas
+    
+    private const int HANDLE_SIZE = 10; // Tamaño del área para redimensionar
     
     public MeasureTool() {
         Object(
@@ -133,9 +140,10 @@ public class MeasureTool : Gtk.Window {
         cr.paint();
         cr.set_operator(Cairo.Operator.OVER);
         
-        if (is_measuring) {
+        // Si hay un rectángulo (cuando las dimensiones no son 0)
+        if (current_x != start_x || current_y != start_y) {
             // Dibujar líneas del rectángulo
-            cr.set_source_rgba(1, 0, 0, 0.8);  // Rojo con 80% de opacidad
+            cr.set_source_rgba(1, 0, 0, 0.8);
             cr.set_line_width(1);
             
             // Dibujar el rectángulo completo
@@ -145,6 +153,13 @@ public class MeasureTool : Gtk.Window {
             cr.line_to(start_x, current_y);
             cr.line_to(start_x, start_y);
             cr.stroke();
+            
+            // Dibujar manejadores de redimensionamiento
+            cr.set_source_rgba(1, 1, 1, 0.8);
+            draw_resize_handle(cr, start_x, start_y);
+            draw_resize_handle(cr, current_x, start_y);
+            draw_resize_handle(cr, current_x, current_y);
+            draw_resize_handle(cr, start_x, current_y);
             
             // Dibujar líneas guía extendidas
             cr.set_source_rgba(1, 0, 0, 0.4);  // Rojo más transparente
@@ -216,13 +231,52 @@ public class MeasureTool : Gtk.Window {
         return false;
     }
     
+    private void draw_resize_handle(Cairo.Context cr, double x, double y) {
+        cr.rectangle(x - HANDLE_SIZE/2, y - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
+        cr.fill();
+    }
+    
+    private int get_resize_handle(double x, double y) {
+        // Verificar cada esquina
+        if (is_near_point(x, y, start_x, start_y)) return 1;
+        if (is_near_point(x, y, current_x, start_y)) return 2;
+        if (is_near_point(x, y, current_x, current_y)) return 3;
+        if (is_near_point(x, y, start_x, current_y)) return 4;
+        return 0;
+    }
+    
+    private bool is_near_point(double x, double y, double px, double py) {
+        return (Math.fabs(x - px) <= HANDLE_SIZE/2 && Math.fabs(y - py) <= HANDLE_SIZE/2);
+    }
+    
+    private bool is_inside_rectangle(double x, double y) {
+        double min_x = double.min(start_x, current_x);
+        double max_x = double.max(start_x, current_x);
+        double min_y = double.min(start_y, current_y);
+        double max_y = double.max(start_y, current_y);
+        
+        return (x >= min_x && x <= max_x && y >= min_y && y <= max_y);
+    }
+    
     private bool on_button_press(Gdk.EventButton event) {
         if (event.button == 1) {
-            is_measuring = true;
-            start_x = event.x;
-            start_y = event.y;
-            current_x = event.x;
-            current_y = event.y;
+            resize_handle = get_resize_handle(event.x, event.y);
+            
+            if (resize_handle > 0) {
+                is_resizing = true;
+            } else if (is_inside_rectangle(event.x, event.y)) {
+                // Si el clic es dentro del rectángulo, iniciamos el movimiento
+                is_moving = true;
+                // Guardamos el offset del punto de clic relativo a la esquina superior izquierda
+                drag_offset_x = event.x - start_x;
+                drag_offset_y = event.y - start_y;
+            } else {
+                is_measuring = true;
+                start_x = event.x;
+                start_y = event.y;
+                current_x = event.x;
+                current_y = event.y;
+            }
             this.queue_draw();
         }
         return true;
@@ -231,6 +285,8 @@ public class MeasureTool : Gtk.Window {
     private bool on_button_release(Gdk.EventButton event) {
         if (event.button == 1) {
             is_measuring = false;
+            is_moving = false;
+            is_resizing = false;
             this.queue_draw();
         }
         return true;
@@ -240,6 +296,38 @@ public class MeasureTool : Gtk.Window {
         if (is_measuring) {
             current_x = event.x;
             current_y = event.y;
+        } else if (is_moving) {
+            // Calculamos la nueva posición manteniendo el tamaño del rectángulo
+            double width = current_x - start_x;
+            double height = current_y - start_y;
+            
+            // Actualizamos la posición basada en el punto de arrastre
+            start_x = event.x - drag_offset_x;
+            start_y = event.y - drag_offset_y;
+            current_x = start_x + width;
+            current_y = start_y + height;
+        } else if (is_resizing) {
+            switch (resize_handle) {
+                case 1: // Esquina superior izquierda
+                    start_x = event.x;
+                    start_y = event.y;
+                    break;
+                case 2: // Esquina superior derecha
+                    current_x = event.x;
+                    start_y = event.y;
+                    break;
+                case 3: // Esquina inferior derecha
+                    current_x = event.x;
+                    current_y = event.y;
+                    break;
+                case 4: // Esquina inferior izquierda
+                    start_x = event.x;
+                    current_y = event.y;
+                    break;
+            }
+        }
+        
+        if (is_measuring || is_moving || is_resizing) {
             this.queue_draw();
         }
         return true;
