@@ -12,11 +12,15 @@ public class MeasureTool : Gtk.Window {
     private int last_height = 0;
     private double drag_offset_x = 0;
     private double drag_offset_y = 0;
-    private int resize_handle = 0; // 0: ninguno, 1-4: esquinas
-    
-    private const int HANDLE_SIZE = 10; // Tamaño del área para redimensionar
-    
-    private string last_screenshot_path = "";
+    private int resize_handle = 0;
+    private const int HANDLE_SIZE = 10;
+    private bool is_picking_color = false;
+    private string current_hex_color = "";
+    private string current_rgb_color = "";
+    private const int MAGNIFIER_SIZE = 200;
+    private const int MAGNIFIER_ZOOM = 4;
+    private string color_history_file;
+    private const int MAX_COLORS = 50;
     
     public MeasureTool() {
         Object(
@@ -83,27 +87,58 @@ public class MeasureTool : Gtk.Window {
         
         drawing_area.button_press_event.connect(on_button_press);
         drawing_area.button_release_event.connect(on_button_release);
-        drawing_area.motion_notify_event.connect(on_motion);
+        drawing_area.motion_notify_event.connect((event) => {
+            if (is_picking_color) {
+                this.queue_draw();
+                return true;
+            }
+            return on_motion(event);
+        });
         
         this.add(drawing_area);
         
-        // Agregar eventos de teclado
+        color_history_file = Path.build_filename(Environment.get_home_dir(), "Escritorio", "color_history.txt");
+        
+        // Modificar eventos de teclado
         this.key_press_event.connect((event) => {
             if (event.keyval == Gdk.Key.Escape) {
                 this.destroy();
                 return true;
             }
-            // Copiar dimensiones cuando se presiona Ctrl+C
+            
             if ((event.state & Gdk.ModifierType.CONTROL_MASK) != 0) {
                 if (event.keyval == Gdk.Key.c || event.keyval == Gdk.Key.C) {
                     copy_dimensions();
                     return true;
                 }
-                // Capturar área cuando se presiona Ctrl+S
                 if (event.keyval == Gdk.Key.s || event.keyval == Gdk.Key.S) {
                     take_screenshot();
                     return true;
                 }
+            }
+            
+            // Activar color picker con Alt
+            if (event.keyval == Gdk.Key.Alt_L || event.keyval == Gdk.Key.Alt_R) {
+                is_picking_color = true;
+                this.queue_draw();
+                return true;
+            }
+            
+            return false;
+        });
+        
+        this.key_release_event.connect((event) => {
+            if (event.keyval == Gdk.Key.Alt_L || event.keyval == Gdk.Key.Alt_R) {
+                // Al soltar Alt, copiar el color actual
+                if (current_hex_color != "") {
+                    var clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD);
+                    clipboard.set_text(current_hex_color, -1);
+                    save_color(current_hex_color, current_rgb_color);
+                    show_copy_notification("Color copiado: " + current_hex_color);
+                }
+                is_picking_color = false;
+                this.queue_draw();
+                return true;
             }
             return false;
         });
@@ -138,10 +173,116 @@ public class MeasureTool : Gtk.Window {
         
         notification.show_all();
         
-        GLib.Timeout.add(1000, () => {
+        // Cerrar la notificación después de 2 segundos
+        GLib.Timeout.add(2000, () => {
             notification.destroy();
             return false;
         });
+    }
+    
+    private void take_screenshot() {
+        if (current_x == start_x || current_y == start_y) {
+            return; // No hay área seleccionada
+        }
+        
+        try {
+            // Obtener las coordenadas del área
+            int x = (int)double.min(start_x, current_x);
+            int y = (int)double.min(start_y, current_y);
+            int width = (int)Math.fabs(current_x - start_x);
+            int height = (int)Math.fabs(current_y - start_y);
+            
+            // Ocultar temporalmente la ventana para la captura
+            this.hide();
+            
+            // Esperar a que la ventana se oculte completamente
+            while (Gtk.events_pending()) {
+                Gtk.main_iteration();
+            }
+            Thread.usleep(200000); // Esperar 200ms para asegurar que la pantalla se actualice
+            
+            // Forzar actualización de la pantalla
+            var root_window = screen.get_root_window();
+            root_window.process_updates(true);
+            
+            // Tomar la captura del área desde la ventana raíz
+            var screenshot = Gdk.pixbuf_get_from_window(
+                root_window,
+                x, y,
+                width, height
+            );
+            
+            // Mostrar la ventana nuevamente
+            this.show();
+            
+            // Generar nombre de archivo único
+            string timestamp = new DateTime.now_local().format("%Y%m%d_%H%M%S");
+            string filename = @"screenshot_$(timestamp).png";
+            string filepath = Path.build_filename(Environment.get_home_dir(), "Imágenes", filename);
+            
+            // Asegurarse de que el directorio existe
+            File directory = File.new_for_path(Path.build_filename(Environment.get_home_dir(), "Imágenes"));
+            if (!directory.query_exists()) {
+                directory.make_directory_with_parents();
+            }
+            
+            // Guardar la captura
+            screenshot.save(filepath, "png");
+            
+            // Mostrar notificación
+            var notification = new Gtk.Window(Gtk.WindowType.POPUP);
+            notification.set_default_size(250, 40);
+            
+            var box = new Gtk.Box(Gtk.Orientation.VERTICAL, 5);
+            box.margin = 10;
+            
+            var label = new Gtk.Label("¡Captura guardada!");
+            label.margin = 5;
+            box.add(label);
+            
+            var path_label = new Gtk.Label(filepath);
+            path_label.margin = 5;
+            path_label.set_line_wrap(true);
+            box.add(path_label);
+            
+            notification.add(box);
+            
+            // Posicionar la notificación
+            var workarea = screen.get_monitor_workarea(screen.get_primary_monitor());
+            notification.move(
+                workarea.x + (workarea.width - 250) / 2,
+                workarea.y + (workarea.height - 80) / 2
+            );
+            
+            notification.show_all();
+            
+            // Cerrar la notificación después de 2 segundos
+            GLib.Timeout.add(2000, () => {
+                notification.destroy();
+                return false;
+            });
+            
+        } catch (Error e) {
+            stderr.printf("Error al guardar la captura: %s\n", e.message);
+            
+            // Asegurarse de que la ventana se muestre en caso de error
+            this.show();
+            
+            // Mostrar notificación de error
+            var error_notification = new Gtk.Window(Gtk.WindowType.POPUP);
+            error_notification.set_default_size(200, 40);
+            
+            var label = new Gtk.Label("Error al guardar la captura");
+            label.margin = 10;
+            error_notification.add(label);
+            
+            error_notification.show_all();
+            
+            GLib.Timeout.add(2000, () => {
+                error_notification.destroy();
+                return false;
+            });
+        }
     }
     
     private bool on_draw(Cairo.Context cr) {
@@ -150,7 +291,6 @@ public class MeasureTool : Gtk.Window {
         cr.paint();
         cr.set_operator(Cairo.Operator.OVER);
         
-        // Si hay un rectángulo (cuando las dimensiones no son 0)
         if (current_x != start_x || current_y != start_y) {
             // Dibujar líneas del rectángulo
             cr.set_source_rgba(1, 0, 0, 0.8);
@@ -238,6 +378,12 @@ public class MeasureTool : Gtk.Window {
             last_width = width;
             last_height = height;
         }
+        
+        // Añadir el dibujo del color picker
+        if (is_picking_color) {
+            draw_color_picker(cr);
+        }
+        
         return false;
     }
     
@@ -275,9 +421,7 @@ public class MeasureTool : Gtk.Window {
             if (resize_handle > 0) {
                 is_resizing = true;
             } else if (is_inside_rectangle(event.x, event.y)) {
-                // Si el clic es dentro del rectángulo, iniciamos el movimiento
                 is_moving = true;
-                // Guardamos el offset del punto de clic relativo a la esquina superior izquierda
                 drag_offset_x = event.x - start_x;
                 drag_offset_y = event.y - start_y;
             } else {
@@ -307,15 +451,15 @@ public class MeasureTool : Gtk.Window {
             current_x = event.x;
             current_y = event.y;
         } else if (is_moving) {
-            // Calculamos la nueva posición manteniendo el tamaño del rectángulo
+            double dx = event.x - drag_offset_x;
+            double dy = event.y - drag_offset_y;
             double width = current_x - start_x;
             double height = current_y - start_y;
             
-            // Actualizamos la posición basada en el punto de arrastre
-            start_x = event.x - drag_offset_x;
-            start_y = event.y - drag_offset_y;
-            current_x = start_x + width;
-            current_y = start_y + height;
+            start_x = dx;
+            start_y = dy;
+            current_x = dx + width;
+            current_y = dy + height;
         } else if (is_resizing) {
             switch (resize_handle) {
                 case 1: // Esquina superior izquierda
@@ -343,118 +487,155 @@ public class MeasureTool : Gtk.Window {
         return true;
     }
     
-    private void take_screenshot() {
-        if (current_x == start_x || current_y == start_y) {
-            return; // No hay área seleccionada
-        }
-        
+    private void draw_color_picker(Cairo.Context cr) {
         try {
-            // Obtener las coordenadas del área
-            int x = (int)double.min(start_x, current_x);
-            int y = (int)double.min(start_y, current_y);
-            int width = (int)Math.fabs(current_x - start_x);
-            int height = (int)Math.fabs(current_y - start_y);
+            // Obtener la posición actual del mouse
+            int x, y;
+            var display = Gdk.Display.get_default();
+            var seat = display.get_default_seat();
+            var device = seat.get_pointer();
+            var window = this.get_window();
+            window.get_device_position(device, out x, out y, null);
             
-            // Ocultar temporalmente la ventana para la captura
-            this.hide();
-            
-            // Esperar a que la ventana se oculte completamente
-            while (Gtk.events_pending()) {
-                Gtk.main_iteration();
-            }
-            Thread.usleep(200000); // Esperar 200ms para asegurar que la pantalla se actualice
-            
-            // Forzar actualización de la pantalla
+            // Capturar el área alrededor del cursor
             var root_window = screen.get_root_window();
-            root_window.process_updates(true);
+            int capture_size = MAGNIFIER_SIZE / MAGNIFIER_ZOOM;
+            int offset = capture_size / 2;
             
-            // Tomar la captura del área desde la ventana raíz
-            var screenshot = Gdk.pixbuf_get_from_window(
+            var pixbuf = Gdk.pixbuf_get_from_window(
                 root_window,
-                x, y,
-                width, height
+                x - offset,
+                y - offset,
+                capture_size,
+                capture_size
             );
             
-            // Mostrar la ventana nuevamente
-            this.show();
+            // Crear una superficie circular para la lupa
+            var surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, MAGNIFIER_SIZE, MAGNIFIER_SIZE);
+            var magnifier_cr = new Cairo.Context(surface);
             
-            // Generar nombre de archivo único
-            string timestamp = new DateTime.now_local().format("%Y%m%d_%H%M%S");
-            string filename = @"screenshot_$(timestamp).png";
-            string filepath = Path.build_filename(Environment.get_home_dir(), "Imágenes", filename);
+            // Crear el recorte circular
+            magnifier_cr.arc(MAGNIFIER_SIZE/2, MAGNIFIER_SIZE/2, MAGNIFIER_SIZE/2, 0, 2 * Math.PI);
+            magnifier_cr.clip();
             
-            // Asegurarse de que el directorio existe
-            File directory = File.new_for_path(Path.build_filename(Environment.get_home_dir(), "Imágenes"));
-            if (!directory.query_exists()) {
-                directory.make_directory_with_parents();
-            }
+            // Dibujar el fondo negro semitransparente
+            magnifier_cr.set_source_rgba(0, 0, 0, 0.7);
+            magnifier_cr.paint();
             
-            // Guardar la captura
-            screenshot.save(filepath, "png");
-            last_screenshot_path = filepath;
+            // Escalar y dibujar la imagen capturada
+            magnifier_cr.scale(MAGNIFIER_ZOOM, MAGNIFIER_ZOOM);
+            Gdk.cairo_set_source_pixbuf(magnifier_cr, pixbuf, 0, 0);
+            magnifier_cr.paint();
             
-            // Mostrar notificación
-            var notification = new Gtk.Window(Gtk.WindowType.POPUP);
-            notification.set_default_size(250, 40);
+            // Dibujar la cruz central
+            magnifier_cr.identity_matrix(); // Resetear la transformación
+            magnifier_cr.set_source_rgba(1, 1, 1, 0.8);
+            magnifier_cr.set_line_width(1);
+            magnifier_cr.move_to(MAGNIFIER_SIZE/2 - 10, MAGNIFIER_SIZE/2);
+            magnifier_cr.line_to(MAGNIFIER_SIZE/2 + 10, MAGNIFIER_SIZE/2);
+            magnifier_cr.move_to(MAGNIFIER_SIZE/2, MAGNIFIER_SIZE/2 - 10);
+            magnifier_cr.line_to(MAGNIFIER_SIZE/2, MAGNIFIER_SIZE/2 + 10);
+            magnifier_cr.stroke();
             
-            var box = new Gtk.Box(Gtk.Orientation.VERTICAL, 5);
-            box.margin = 10;
+            // Dibujar la lupa en la pantalla
+            cr.set_source_surface(surface, x - MAGNIFIER_SIZE/2, y - MAGNIFIER_SIZE - 40);
+            cr.paint();
             
-            var label = new Gtk.Label("¡Captura guardada!");
-            label.margin = 5;
-            box.add(label);
+            // Obtener el color del píxel central
+            unowned uint8[] pixels = pixbuf.get_pixels();
+            int channels = pixbuf.get_n_channels();
+            int rowstride = pixbuf.get_rowstride();
+            int center = (offset * rowstride) + (offset * channels);
             
-            var path_label = new Gtk.Label(filepath);
-            path_label.margin = 5;
-            path_label.set_line_wrap(true);
-            box.add(path_label);
+            uint8 r = pixels[center];
+            uint8 g = pixels[center + 1];
+            uint8 b = pixels[center + 2];
             
-            notification.add(box);
+            // Actualizar los valores de color actuales
+            current_hex_color = "#%02X%02X%02X".printf(r, g, b);
+            current_rgb_color = "RGB(%d, %d, %d)".printf(r, g, b);
             
-            // Posicionar la notificación
-            var workarea = screen.get_monitor_workarea(screen.get_primary_monitor());
+            // Mostrar los valores de color
+            cr.set_source_rgba(0, 0, 0, 0.7);
+            cr.rectangle(x - 70, y + 10, 140, 50);
+            cr.fill();
             
-            notification.move(
-                workarea.x + (workarea.width - 250) / 2,
-                workarea.y + (workarea.height - 80) / 2
-            );
-            
-            notification.show_all();
-            
-            // Cerrar la notificación después de 2 segundos
-            GLib.Timeout.add(2000, () => {
-                notification.destroy();
-                return false;
-            });
+            cr.set_source_rgba(1, 1, 1, 1);
+            cr.select_font_face("Sans", Cairo.FontSlant.NORMAL, Cairo.FontWeight.BOLD);
+            cr.set_font_size(12);
+            cr.move_to(x - 60, y + 30);
+            cr.show_text(current_hex_color);
+            cr.move_to(x - 60, y + 50);
+            cr.show_text(current_rgb_color);
             
         } catch (Error e) {
-            // Asegurarse de que la ventana se muestre en caso de error
-            this.show();
-            
-            stderr.printf("Error al guardar la captura: %s\n", e.message);
-            
-            // Mostrar notificación de error
-            var error_notification = new Gtk.Window(Gtk.WindowType.POPUP);
-            error_notification.set_default_size(200, 40);
-            
-            var label = new Gtk.Label("Error al guardar la captura");
-            label.margin = 10;
-            error_notification.add(label);
-            
-            error_notification.show_all();
-            
-            GLib.Timeout.add(2000, () => {
-                error_notification.destroy();
-                return false;
-            });
+            stderr.printf("Error en el color picker: %s\n", e.message);
         }
+    }
+    
+    private void save_color(string hex_color, string rgb_color) {
+        try {
+            var file = File.new_for_path(color_history_file);
+            
+            // Leer colores existentes
+            string[] colors = {};
+            if (file.query_exists()) {
+                string content;
+                FileUtils.get_contents(color_history_file, out content);
+                colors = content.split("\n");
+            }
+            
+            // Añadir nuevo color al inicio
+            var now = new DateTime.now_local();
+            string new_color = "%s | %s | %s".printf(
+                hex_color,
+                rgb_color,
+                now.format("%Y-%m-%d %H:%M:%S")
+            );
+            
+            // Crear nueva lista de colores
+            string[] new_colors = { new_color };
+            foreach (string color in colors) {
+                if (color.strip() != "" && new_colors.length < MAX_COLORS) {
+                    new_colors += color;
+                }
+            }
+            
+            // Guardar al archivo
+            string content = string.joinv("\n", new_colors);
+            FileUtils.set_contents(color_history_file, content);
+            
+        } catch (Error e) {
+            stderr.printf("Error al guardar el color: %s\n", e.message);
+        }
+    }
+    
+    private void show_copy_notification(string message) {
+        var notification = new Gtk.Window(Gtk.WindowType.POPUP);
+        notification.set_default_size(200, 40);
+        
+        var label = new Gtk.Label(message);
+        label.margin = 10;
+        notification.add(label);
+        
+        // Posicionar la notificación
+        var workarea = screen.get_monitor_workarea(screen.get_primary_monitor());
+        notification.move(
+            workarea.x + (workarea.width - 200) / 2,
+            workarea.y + (workarea.height - 40) / 2
+        );
+        
+        notification.show_all();
+        
+        // Cerrar la notificación después de 1 segundo
+        GLib.Timeout.add(1000, () => {
+            notification.destroy();
+            return false;
+        });
     }
     
     public static int main(string[] args) {
         Gtk.init(ref args);
-        
-        GLib.Environment.set_application_name("Herramienta de Medición");
-        Gtk.Window.set_default_icon_name("measure-tool");
         
         var window = new MeasureTool();
         window.destroy.connect(Gtk.main_quit);
